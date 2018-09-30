@@ -9,23 +9,33 @@ TODO: Outline the benefits of Elixir and which use cases leverage that
 # Generate a project
 
 TODO: Mix new versus phx.new
+
 TODO: Umbrella or not
+
 TODO: Mix new options
+
 TODO: Mix phx.new options
 
 # Early dependencies
 
 TODO: dialyzer
+
 TODO: credo
+
 TODO: stream_data
+
 TODO: mix_test_watch
 
 # Testing
 
 TODO: Recommend dependency injection for controlled code
+
 TODO: Recommend mox for external code
+
 TODO: Async testing
+
 TODO: stream_data
+
 TODO: Factories, see: Factories
 
 # Factories
@@ -35,15 +45,21 @@ TODO: Not worth a library
 # Hosting
 
 TODO: Discuss considerations
+
 TODO: Heroku
+
 TODO: ECS
+
 TODO: EKS
+
 TODO: EC2
 
 # CI/CD
 
 TODO: Discuss considerations
+
 TODO: CircleCI
+
 TODO: Travis
 
 # Heroku guide
