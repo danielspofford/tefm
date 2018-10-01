@@ -54,10 +54,14 @@ minimally, and recover automatically.
 
 ## Use cases
 
-Elixir is a great choice for any backend system that is not CPU bound by an
-inherently sequential task. If on top of that the system is high traffic, has
-many connections, or is otherwise IO bound, Elixir is an exceptional choice.
-Between these two points are most systems, for example:
+The use cases Elixir works for can most succinctly be described by the following
+two points; Elixir is perfect for systems that:
+
+- are not CPU bound by an inherently sequential task
+
+- are high traffic, have many connections, or are otherwise IO bound
+
+Well within these two points are most systems:
 
 - Chat backends
 
@@ -76,3 +80,5 @@ Between these two points are most systems, for example:
 - Data pipelines
 
 - Embedded firmware for IoT devices
+
+- Etc.
