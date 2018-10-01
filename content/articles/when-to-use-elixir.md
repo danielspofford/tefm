@@ -54,8 +54,7 @@ minimally, and recover automatically.
 
 ## Use cases
 
-The use cases Elixir works for can most succinctly be described by the following
-two points; Elixir is perfect for systems that:
+Elixir is perfect for systems that:
 
 - are not CPU bound by an inherently sequential task
 
