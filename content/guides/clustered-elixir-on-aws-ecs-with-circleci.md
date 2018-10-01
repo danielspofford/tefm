@@ -6,9 +6,9 @@ TODO
 
 You will need an AWS account and credentials.
 
-* Erlang 21.0.4
-* Elixir 1.7.2
-* Phoenix 1.3.0
+- Erlang 21.0.4
+- Elixir 1.7.2
+- Phoenix 1.3.0
 
 Some code examples referenced here are pulled from Distillery, sometimes with
 minor adjustments. Where applicable a reference line will precede a section. If
