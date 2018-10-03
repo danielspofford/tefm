@@ -1,19 +1,17 @@
-# AWS ECS guide
+# Clustered Elixir on AWS ECS with CircleCI
 
-TODO
+This guide will walk you through setting up an Elixir application on existing
+AWS infrastructure like that setup in the
+[Standing up an ECS Web Stack with Stacker](content/guides/standing-up-an-ecs-web-stack-with-stacker.md)
+guide.
 
-## Getting Started
+## Prerequisites
 
-You will need an AWS account and credentials.
+An AWS account and credentials.
 
-- Erlang 21.0.4
-- Elixir 1.7.2
+- Erlang 21.1
+- Elixir 1.7.3
 - Phoenix 1.3.0
-
-Some code examples referenced here are pulled from Distillery, sometimes with
-minor adjustments. Where applicable a reference line will precede a section. If
-at any point you would benefit from more detail, dropping down into the
-Distillery documentation may help.
 
 ## Create a Phoenix Project
 
@@ -46,7 +44,7 @@ $ mix ecto.create
 
 ## OTP Releases via Distillery
 
-Reference: https://hexdocs.pm/distillery/guides/phoenix_walkthrough.html
+Reference: Distillery's [Phoenix walkthrough](phx_walkthrough)
 
 Add `{:distillery, "~> 2.0"}` to the root `mix.exs` and then:
 
@@ -102,7 +100,7 @@ $ PORT=4001 \
 
 ## Containerize your Releases
 
-Reference: https://hexdocs.pm/distillery/guides/working_with_docker.html
+Reference: Distillery's [Working with Docker](working_with_docker)
 
 Create a new `Dockerfile` in your project root:
 
@@ -240,14 +238,7 @@ run                            Run the app in Docker
 $ make build
 ```
 
-## Standup your Infrastructure
-
-Drop in the infrastructure folder.
-
-```
-$ AWS_DEFAULT_REGION=us-east-2 \
-    STACK=ds \
-    SECRET_KEY_BASE=super_secret \
-    IMAGE=lime_umbrella:latest \
-    make build
-`
+[phx_walkthrough]: https://hexdocs.pm/distillery/guides/phoenix_walkthrough.html
+"Distillery's Phoenix walkthrough"
+[working_with_docker]: https://hexdocs.pm/distillery/guides/working_with_docker.html
+"Working With Docker"
