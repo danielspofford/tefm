@@ -1,9 +1,13 @@
 # Clustered Elixir on AWS ECS with CircleCI
 
-This guide will walk you through setting up an Elixir application on existing
-AWS infrastructure like that setup in the
-[Standing up an ECS Web Stack with Stacker](content/guides/standing-up-an-ecs-web-stack-with-stacker.md)
-guide.
+This guide will walk you through setting up an Elixir application on top of AWS
+infrastructure resulting in:
+
+- An Elixir cluster
+- Convenient build via Docker and a Makefile
+- Containerized OTP releases
+- CI/CD via CircleCI
+- Easy boot time configuration via Distillery's config providers
 
 ## Prerequisites
 
@@ -11,7 +15,7 @@ An AWS account and credentials.
 
 - Erlang 21.1
 - Elixir 1.7.3
-- Phoenix 1.3.0
+- Phoenix 1.3.4
 
 ## Create a Phoenix Project
 
@@ -19,10 +23,10 @@ An AWS account and credentials.
 $ mix phx.new lime --umbrella
 Fetch and install dependencies? [Yn]
 $ y
-$ cd lime_umbrella
+$ cd lime_umbrella && mix format
 ```
 
-## Docker for Local Development Environment
+## Docker for Local Postgres
 
 Create a `docker-compose.yml` file in the project root with the follow contents:
 
@@ -53,10 +57,10 @@ $ mix do deps.get, compile
 $ mix release.init
 ```
 
-Update the prod endpoint configuration to resemble this:
+Replace the `LimeWeb.Endpoint` config in `apps/lime_web/config/prod.exs` with:
 
 ```
-config :lime_umbrella, LimeWeb.Endpoint,
+config :lime_web, LimeWeb.Endpoint,
   http: [port: {:system, "PORT"}],
   url: [host: "localhost", port: {:system, "PORT"}],
   cache_static_manifest: "priv/static/cache_manifest.json",
@@ -65,16 +69,15 @@ config :lime_umbrella, LimeWeb.Endpoint,
   version: Application.spec(:lime_umbrella, :vsn)
 ```
 
+Navigate to `apps/lime_web/assets/` then:
+
 ```
-$ cd apps/lime_web/assets/
 $ node node_modules/brunch/bin/brunch build --production
 $ cd ..
 $ mix phx.digest
 ```
 
-Our Ecto configuration will rely entirely on a `DATABASE_URL` env var. Lets
-straighten out our repo configurations a bit to reflect that.  Navigate to
-`apps/lime/config` and modify `config.exs` adding:
+Modify `apps/lime/config/config.exs` adding:
 
 ```
 config :lime, Lime.Repo,
@@ -82,14 +85,26 @@ config :lime, Lime.Repo,
   pool_size: 10
 ```
 
-Drop all repo configuration from `dev.exs` and do the same to `test.exs` except
-leave the `:pool` configuration for the repo. Next, delete `import_config
-"prod.secret.exs"` from `prod.exs` and delete the `prod.secret.exs` file as
-well. Keep in mind now that for all mix envs starting your application requires
-the `DATABASE_URL` env var to be set. A tool like direnv can minimize the pain
-of managing your environment.
+Remove all repo configuration from `apps/lime/config/dev.exs`. Reduce the repo
+configuration in `apps/lime/config/test.exs` to just:
 
-Finally, build your release and ensure it starts:
+```
+config :lime, Lime.Repo,
+  pool: Ecto.Adapters.SQL.Sandbox
+```
+
+Modify `apps/lime/config/prod.exs` removing this line:
+
+```
+import_config "prod.secret.exs"
+```
+
+Delete the `apps/lime/config/prod.secret.exs` file.
+
+*Note*: In all Mix environments Ecto is configured via the `DATABASE_URL`
+environment variable.
+
+Build your release and ensure it starts:
 
 ```
 $ MIX_ENV=prod mix release
@@ -98,96 +113,55 @@ $ PORT=4001 \
     _build/prod/rel/lime_umbrella/bin/lime_umbrella foreground
 ```
 
+## Dynamic boot time configuration
+
+Reference: Distillery's [Working with Docker](working_with_docker)
+
+Within `rel/config.exs` add this snippet:
+
+```elixir
+set config_providers: [
+  {Mix.Releases.Config.Providers.Elixir, ["${RELEASE_ROOT_DIR}/etc/config.exs"]}
+]
+
+set overlays: [
+  {:copy, "rel/config/config.exs", "etc/config.exs"}
+]
+
+set(vm_args: "rel/vm.args.eex")
+```
+
+To the bottom of your application's release definition, that is the section that
+starts with `release :lime_umbrella do`.
+
+Create `rel/config/config.exs`:
+
+```elixir
+config :lime_web, LimeWeb.Endpoint,
+  secret_key_base: System.get_env("SECRET_KEY_BASE")
+```
+
+Create `rel/vm.args.eex`:
+
+```
+-name <%= release_name %>@127.0.0.1
+-setcookie ${COOKIE}
+-smp auto
+```
+
+*Note*: The cookie value above will only be interpolated out of the system
+environment at boot time if at that time `REPLACE_OS_VARS=true` is in the system
+environment.
+
 ## Containerize your Releases
 
 Reference: Distillery's [Working with Docker](working_with_docker)
 
-Create a new `Dockerfile` in your project root:
+Create a new `Dockerfile` in your project root with the contents of the
+[Alpine Elixir Release](https://github.com/danielspofford/alpine-elixir-release)
+Dockerfile.
 
-```
-# The version of Alpine to use for the final image
-# This should match the version of Alpine that the `elixir:1.7.2-alpine` image uses
-ARG ALPINE_VERSION=3.8
-
-FROM elixir:1.7.2-alpine AS builder
-
-# The following are build arguments used to change variable parts of the image.
-# The name of your application/release (required)
-ARG APP_NAME
-# The version of the application we are building (required)
-ARG APP_VSN
-# The environment to build with
-ARG MIX_ENV=prod
-# Set this to true if this release is not a Phoenix app
-ARG SKIP_PHOENIX=false
-# If you are using an umbrella project, you can change this
-# argument to the directory the Phoenix app is in so that the assets
-# can be built
-ARG PHOENIX_SUBDIR=./apps/lime_web
-
-ENV SKIP_PHOENIX=${SKIP_PHOENIX} \
-    APP_NAME=${APP_NAME} \
-    APP_VSN=${APP_VSN} \
-    MIX_ENV=${MIX_ENV}
-
-# By convention, /opt is typically used for applications
-WORKDIR /opt/app
-
-# This step installs all the build tools we'll need
-RUN apk update && \
-  apk upgrade --no-cache && \
-  apk add --no-cache \
-    nodejs \
-    yarn \
-    git \
-    build-base && \
-  mix local.rebar --force && \
-  mix local.hex --force
-
-# This copies our app source code into the build container
-COPY . .
-
-RUN mix do deps.get, deps.compile, compile
-
-# This step builds assets for the Phoenix app (if there is one)
-# If you aren't building a Phoenix app, pass `--build-arg SKIP_PHOENIX=true`
-# This is mostly here for demonstration purposes
-RUN if [ ! "$SKIP_PHOENIX" = "true" ]; then \
-  cd ${PHOENIX_SUBDIR}/assets && \
-  yarn install && \
-  yarn deploy && \
-  cd .. && \
-  mix phx.digest; \
-fi
-
-RUN \
-  mkdir -p /opt/built && \
-  mix release --verbose && \
-  cp _build/${MIX_ENV}/rel/${APP_NAME}/releases/${APP_VSN}/${APP_NAME}.tar.gz /opt/built && \
-  cd /opt/built && \
-  tar -xzf ${APP_NAME}.tar.gz && \
-  rm ${APP_NAME}.tar.gz
-
-# From this line onwards, we're in a new image, which will be the image used in production
-FROM alpine:${ALPINE_VERSION}
-
-# The name of your application/release (required)
-ARG APP_NAME
-
-RUN apk update && \
-    apk add --no-cache \
-      bash \
-      openssl-dev
-
-ENV REPLACE_OS_VARS=true \
-    APP_NAME=${APP_NAME}
-
-WORKDIR /opt/app
-
-COPY --from=builder /opt/built .
-
-CMD trap 'exit' INT; /opt/app/bin/${APP_NAME} foreground
-```
+This is based off of the Dockerfile described in Distillery's 2.0 documentation.
 
 Create a `.dockerignore` in your project root:
 
@@ -211,22 +185,30 @@ Create a `Makefile` in your project root:
 APP_NAME ?= lime_umbrella
 APP_VSN ?= 0.1.0
 BUILD ?= `git rev-parse --short HEAD`
+SKIP_PHOENIX ?= false
+PHOENIX_SUBDIR ?= ./apps/lime_web
 
 help:
     @echo "$(APP_NAME):$(APP_VSN)-$(BUILD)"
-    @perl -nle'print $& if m{^[a-zA-Z_-]+:.*?## .*$$}' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
+    @perl -nle'print $& if m{^[a-zA-Z_-]+:.*?## .*$$}' $(MAKEFILE_LIST) | \
+      sort | \
+      awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
 build: ## Build the Docker image
   docker build --build-arg APP_NAME=$(APP_NAME) \
     --build-arg APP_VSN=$(APP_VSN) \
+    --build-arg SKIP_PHOENIX=$(SKIP_PHOENIX) \
+    --build-arg PHOENIX_SUBDIR=$(PHOENIX_SUBDIR) \
     -t $(APP_NAME):$(APP_VSN)-$(BUILD) \
     -t $(APP_NAME):latest .
-
-run: ## Run the app in Docker
-  docker run --env-file config/docker.env \
-    --expose 4000 -p 4000:4000 \
-    --rm -it $(APP_NAME):latest
 ```
+
+*Note*: If make reports an error mentioning multiple target patterns, you need
+to ensure the Makefile is formatted with tabs not spaces.
+
+*Note*: Makefiles like this can be helpful to simplify the build process. If
+they start to grow in size or complexity it becomes invaluable to have an
+informative help command or documentation.
 
 Ensure help outputs something similar then build the image:
 
@@ -238,7 +220,12 @@ run                            Run the app in Docker
 $ make build
 ```
 
+TODO: We are going to need that image in a second.
+
+## Generate Infrastructure Folder TODO: Better section name
+
+
+
+[ecs_stacker]: content/guides/standing-up-an-ecs-web-stack-with-stacker.md
 [phx_walkthrough]: https://hexdocs.pm/distillery/guides/phoenix_walkthrough.html
-"Distillery's Phoenix walkthrough"
 [working_with_docker]: https://hexdocs.pm/distillery/guides/working_with_docker.html
-"Working With Docker"

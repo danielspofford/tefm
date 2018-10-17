@@ -1,3 +1,5 @@
+*Note*: This project is in its infancy. Most articles and guides are WIPs.
+
 # The Elixir Field Manual
 
 This repository serves as a living resource to facilitate the adoption and
