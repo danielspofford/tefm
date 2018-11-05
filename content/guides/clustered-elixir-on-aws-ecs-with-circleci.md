@@ -3,24 +3,40 @@
 This guide will walk you through setting up an Elixir application on top of AWS
 infrastructure resulting in:
 
-- An Elixir cluster
-- Convenient build via Docker and a Makefile
-- Containerized OTP releases
+- Language version management via `asdf-vm/asdf`
+- Containerized OTP releases via Docker, `bitwalker/distillery`, and a Makefile
 - CI/CD via CircleCI
 - Easy boot time configuration via Distillery's config providers
+- Automated clustering via `bitwalker/libcluster`
 
 ## Prerequisites
 
 An AWS account and credentials.
 
-- Erlang 21.1
-- Elixir 1.7.3
-- Phoenix 1.3.4
 - Docker
+- [asdf](https://github.com/asdf-vm/asdf)
+- [asdf-elixir](https://github.com/asdf-vm/asdf-elixir)
+- [asdf-erlang](https://github.com/asdf-vm/asdf-erlang)
+
+## Language management via asdf
+
+Create a `.tool-versions` file in the repo's root with the follow contents:
+
+```
+erlang 21.1.1
+elixir 1.7.3-otp-21
+```
+
+Then run:
+
+```
+$ asdf install
+```
 
 ## Create a Phoenix Project
 
 ```
+$ mix archive.install https://github.com/phoenixframework/archives/raw/master/phx_new-1.3.4.ez
 $ mix phx.new lime --umbrella
 Fetch and install dependencies? [Yn]
 $ y
@@ -101,13 +117,15 @@ config :lime, Lime.Repo,
   pool: Ecto.Adapters.SQL.Sandbox
 ```
 
-Modify `apps/lime/config/prod.exs` removing this line:
+Modify `apps/lime/config/prod.exs` and `apps/lime_web/config/prod.exs` removing
+this line from both:
 
 ```
 import_config "prod.secret.exs"
 ```
 
-Delete the `apps/lime/config/prod.secret.exs` file.
+Delete the `apps/lime/config/prod.secret.exs` and
+`apps/lime_web/config/prod.secret.exs` files.
 
 *Note*: In all Mix environments Ecto is configured via the `DATABASE_URL`
 environment variable.
@@ -137,8 +155,6 @@ set config_providers: [
 set overlays: [
   {:copy, "rel/config/config.exs", "etc/config.exs"}
 ]
-
-set(vm_args: "rel/vm.args.eex")
 ```
 
 
@@ -150,18 +166,6 @@ use Mix.Config
 config :lime_web, LimeWeb.Endpoint,
   secret_key_base: System.get_env("SECRET_KEY_BASE")
 ```
-
-Create `rel/vm.args.eex` containing:
-
-```
--name <%= release_name %>@127.0.0.1
--setcookie ${COOKIE}
--smp auto
-```
-
-*Note*: The cookie value above will only be interpolated out of the system
-environment at boot time if at that time `REPLACE_OS_VARS=true` is in the system
-environment.
 
 ## Containerize your Releases
 
@@ -250,6 +254,9 @@ $ mix draft.github danielspofford/draft_aws_ecs --app-name=limeumbrella
 $ cd infrastructure
 ```
 
+Edit the `stacker.yaml` file adding `PORT: "5000"` to the `ContainerEnvironment`
+section under the `limeumbrella-web-stack` section.
+
 *Disclaimer*: Review the Makefile at your leisure but know that these next few
 steps are going to create infrastructure on AWS that will cost you money. Not
 much, but it will.  There is also an easy command to tear it all down.
@@ -302,16 +309,44 @@ $ STACK=dev make build
 ```
 
 Notice whatever was stood up before will be noticed and skipped and it will pick
-up where it left off.
+up where it left off. Your app is now up and running and can be viewed by
+navigating the the associated ELBs DNS name. This can be found in the AWS
+console by going to EC2 then Load Balancers and viewing the associated ELBs
+Basic Configuration.
+
+### Tear down AWS infrastructure
+
+If you plan on continuing through this guide then skip this section for now.
+Run `make shell` from within the infrastructure folder and then run
+`STACK=ds make destroy ARGS=--force`.
+
+*Note*: If your ECR has images in it you will need to delete those yourselves
+before the above command will be able to destroy it.
 
 ## CI/CD via CircleCI
 
+In the repo's root:
+
+```
+$ mix draft.github danielspofford/draft_aws_ecs_circleci_elixir \
+  --app-name=limeumbrella \
+  --production-image={the URI} \
+  --cluster=your_cluster_name \
+  --service=your_service_name \
+  --task=your_task_definition_name \
+  --slack-build-channel=your_slack_channel \
+  --slack-hook=your_slack_hook
+```
+
+If you want you can set the slack keys to gibberish and then modify the
+generated `.circleci/config.yml` removing any sections specific to them.
+
+Commit everything and push it up to master then login to CircleCI with your
+GitHub account and follow / start building this repository.
+
+## Clustering
+
 TODO: write me
-
-## Tear down AWS infrastructure
-
-Run `make shell` from within the infrastructure folder and then run `STACK=ds
-make destroy ARGS=--force`.
 
 [phx_walkthrough]: https://hexdocs.pm/distillery/guides/phoenix_walkthrough.html
 [working_with_docker]: https://hexdocs.pm/distillery/guides/working_with_docker.html
