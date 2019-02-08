@@ -1,151 +1,179 @@
 # Clustered Elixir on AWS ECS with CircleCI
 
-This guide will walk you through setting up an Elixir application on top of AWS
-infrastructure resulting in:
+This guide will walk you through setting up an [Elixir](elixir) application on
+top of AWS infrastructure resulting in:
 
 - Language version management via `asdf-vm/asdf`
-- Containerized OTP releases via Docker, `bitwalker/distillery`, and a Makefile
-- CI/CD via CircleCI
-- Easy boot time configuration via Distillery's config providers
-- Automated clustering via `bitwalker/libcluster`
+- Error reporting via Sentry
+- Containerized OTP releases via Docker, [distillery](distillery), and a
+  Makefile
+- Automated checks and deploys via CircleCI
+  - credo
+  - dialyzer
+  - tests
+  - formatting
+- Easy boot time configuration via [distillery](distillery) config providers
+- Automated clustering via [libcluster](libcluster)
 
 ## Prerequisites
 
 An AWS account and credentials.
 
-- Docker
-- [asdf](https://github.com/asdf-vm/asdf)
-- [asdf-elixir](https://github.com/asdf-vm/asdf-elixir)
-- [asdf-erlang](https://github.com/asdf-vm/asdf-erlang)
+- [Docker](docker)
+- [asdf](asdf)
+- [asdf-elixir](asdf-elixir)
+- [asdf-erlang](asdf-erlang)
+- [asdf-nodejs](asdf-nodejs)
 
-## Language management via asdf
+## Create a Phoenix Project
 
-Create a `.tool-versions` file in the repo's root with the follow contents:
+```console
+$ mix archive.install hex phx_new 1.4.0
+$ mix phx.new my_app --umbrella
+Fetch and install dependencies? [Yn]
+$ y
+...
+$ cd my_app_umbrella
+```
+
+## Language Management via asdf
+
+Create `my_app_umbrella/.tool-versions`:
 
 ```
-erlang 21.1.1
-elixir 1.7.3-otp-21
+erlang 21.2.2
+elixir 1.7.4-otp-21
+nodejs 11.6.0
 ```
 
 Then run:
 
-```
+```console
 $ asdf install
-```
-
-## Create a Phoenix Project
-
-```
-$ mix archive.install https://github.com/phoenixframework/archives/raw/master/phx_new-1.3.4.ez
-$ mix phx.new lime --umbrella
-Fetch and install dependencies? [Yn]
-$ y
 ```
 
 ## Docker for Local Postgres
 
-Create a `docker-compose.yml` file in the repo's root with the follow contents:
+Create `my_app_umbrella/docker-compose.yml`:
 
 ```
 version: '2'
 services:
   db:
-    image: postgres:10.5
+    image: postgres:11.1
     ports:
      - "5432:5432"
 ```
 
-Start postgres and create your database:
+Start postgres and create the database:
 
-```
+```console
 $ docker-compose up -d
 $ mix ecto.create
 ```
 
-## OTP Releases via Distillery
-
-Reference: Distillery's [Phoenix walkthrough](phx_walkthrough)
-
-Add `{:distillery, "~> 2.0"}` to the top level `mix.exs` and then:
-
-*Note*: This next dep change is only needed because of
-(this issue)[https://github.com/phoenixframework/phoenix/issues/3119] and will
-go away when Phoenix 1.4 is released and this guide is updated.
-
-In `apps/lime_web/mix.exs`, replace `{:cowboy, "~> 1.0"}` with
-`{:plug_cowboy, "~> 1.0"}`.
-
-From repo's root:
-
-```
-$ mix do deps.get, compile, release.init
-```
-
-Replace the `LimeWeb.Endpoint` config in `apps/lime_web/config/prod.exs` with:
-
-```
-config :lime_web, LimeWeb.Endpoint,
-  http: [port: {:system, "PORT"}],
-  url: [host: "localhost", port: {:system, "PORT"}],
-  cache_static_manifest: "priv/static/cache_manifest.json",
-  server: true,
-  root: ".",
-  version: Application.spec(:lime_umbrella, :vsn)
-```
-
-Navigate to `apps/lime_web/assets/` then:
-
-```
-$ node node_modules/brunch/bin/brunch build --production
-$ cd ..
-$ mix phx.digest
-```
-
-Modify `apps/lime/config/config.exs` adding:
-
-```
-config :lime, Lime.Repo,
-  adapter: Ecto.Adapters.Postgres,
-  pool_size: 10
-```
-
-Remove all repo configuration from `apps/lime/config/dev.exs`. Reduce the repo
-configuration in `apps/lime/config/test.exs` to just:
-
-```
-config :lime, Lime.Repo,
-  pool: Ecto.Adapters.SQL.Sandbox
-```
-
-Modify `apps/lime/config/prod.exs` and `apps/lime_web/config/prod.exs` removing
-this line from both:
-
-```
-import_config "prod.secret.exs"
-```
-
-Delete the `apps/lime/config/prod.secret.exs` and
-`apps/lime_web/config/prod.secret.exs` files.
-
-*Note*: In all Mix environments Ecto is configured via the `DATABASE_URL`
-environment variable.
-
-Build your release and ensure it starts:
-
-```
-$ MIX_ENV=prod mix release
-$ PORT=4001 \
-    DATABASE_URL="postgres://postgres:postgres@localhost/lime_dev" \
-    _build/prod/rel/lime_umbrella/bin/lime_umbrella foreground
-```
-
-## Dynamic boot time configuration
+## Dynamic Boot Time Configuration
 
 Reference: Distillery's [Working with Docker](working_with_docker)
 
-Within `rel/config.exs` add this snippet to the bottom of your application's
-release definition, that is the section that starts with
-`release :lime_umbrella do`.
+Create `my_app_umbrella/rel/commands/migrate.sh`:
+
+```sh
+#!/bin/sh
+
+release_ctl eval --mfa "Carson.ReleaseTasks.Migrator.migrate/0"
+```
+
+In `my_app_umbrella/apps/my_app/mix.exs` add:
+
+```elixir
+{:sentry, "~> 7.0"}
+```
+
+Create `my_app_umbrella/apps/my_app/lib/my_app/release_tasks/migrator.ex`:
+
+```elixir
+defmodule MyApp.ReleaseTasks.Migrator do
+  @moduledoc """
+  Module for migrating the database.
+  """
+
+  require Logger
+
+  @start_apps [
+    :logger,
+    :sentry,
+    :crypto,
+    :ssl,
+    :postgrex,
+    :ecto
+  ]
+
+  @repos [MyApp.Repo]
+
+  def migrate() do
+    start_services()
+
+    _ =
+      try do
+        run_migrations()
+        Logger.info("Success!")
+      rescue
+        exc ->
+          {:ok, task} = Sentry.capture_exception(exc, stacktrace: __STACKTRACE__)
+          {:ok, _event_id} = Task.await(task)
+
+          exc
+          |> inspect
+          |> Logger.error()
+      end
+
+    stop_services()
+  end
+
+  defp start_services do
+    _ = Logger.info("Starting dependencies..")
+    # Start apps necessary for executing migrations
+    Enum.each(@start_apps, &Application.ensure_all_started/1)
+
+    # Start the Repo(s) for app
+    _ = Logger.info("Starting repos..")
+    Enum.each(@repos, & &1.start_link(pool_size: 1))
+  end
+
+  defp stop_services do
+    :init.stop()
+  end
+
+  defp run_migrations do
+    Enum.each(@repos, &run_migrations_for/1)
+  end
+
+  defp run_migrations_for(repo) do
+    app = Keyword.get(repo.config, :otp_app)
+    _ = Logger.info("Running migrations for #{app}")
+    migrations_path = priv_path_for(repo, "migrations")
+    Ecto.Migrator.run(repo, migrations_path, :up, all: true)
+  end
+
+  defp priv_path_for(repo, filename) do
+    app = Keyword.get(repo.config, :otp_app)
+
+    repo_underscore =
+      repo
+      |> Module.split()
+      |> List.last()
+      |> Macro.underscore()
+
+    priv_dir = "#{:code.priv_dir(app)}"
+
+    Path.join([priv_dir, repo_underscore, filename])
+  end
+end
+```
+
+Edit `my_app_umbrella/rel/config.exs` adding this snippet to the bottom of the
+release block:
 
 ```elixir
 set config_providers: [
@@ -155,29 +183,123 @@ set config_providers: [
 set overlays: [
   {:copy, "rel/config/config.exs", "etc/config.exs"}
 ]
-```
 
+set(commands: [migrate: "rel/commands/migrate.sh"])
+```
 
 Create `rel/config/config.exs` containing:
 
 ```elixir
 use Mix.Config
 
-config :lime_web, LimeWeb.Endpoint,
+config :my_app, MyApp.Repo, url: System.get_env("DATABASE_URL")
+
+config :my_app_web, MyAppWeb.Endpoint,
   secret_key_base: System.get_env("SECRET_KEY_BASE")
 ```
 
-## Containerize your Releases
+## OTP Releases via Distillery
+
+Reference: Distillery's [Phoenix walkthrough](phx_walkthrough)
+
+In `my_app_umbrella/mix.exs` add:
+
+```elixir
+{:distillery, "~> 2.0"}
+```
+
+In `my_app_umbrella/apps/my_app/mix.exs` add:
+
+```elixir
+{:dialyxir, "~> 1.0.0-rc.4"},
+{:credo, "~> 1.0"}
+```
+
+From the repository's root:
+
+```console
+$ mix do deps.get, compile, release.init
+```
+
+In `my_app_umbrella/apps/my_app_web/config/prod.exs` replace the
+`MyAppWeb.Endpoint` config  with:
+
+```elixir
+config :my_app_web, MyAppWeb.Endpoint,
+  http: [port: {:system, "PORT"}],
+  url: [host: "localhost", port: {:system, "PORT"}],
+  cache_static_manifest: "priv/static/cache_manifest.json",
+  server: true,
+  root: ".",
+  version: Application.spec(:my_app_umbrella, :vsn)
+```
+
+In `my_app_umbrella/apps/my_app_web/assets/`:
+
+```console
+$ node node_modules/webpack/bin/webpack.js --mode production
+$ cd ..
+$ mix phx.digest
+```
+
+Modify `my_app_umbrella/apps/my_app/config/config.exs` adding:
+
+```elixir
+config :my_app, MyApp.Repo,
+  adapter: Ecto.Adapters.Postgres,
+  pool_size: 10
+```
+
+*Note*: Ensure this is added above the `import_config` line.
+
+Replace the repo configuration in `my_app_umbrella/apps/my_app/config/dev.exs`
+with:
+
+```elixir
+config :my_app, MyApp.Repo,
+  url: "postgres://postgres:postgres@localhost/my_app_dev"
+```
+
+Replace the repo configuration in `my_app_umbrella/apps/my_app/config/test.exs`
+with:
+
+```elixir
+config :my_app, MyApp.Repo,
+  url: "postgres://postgres:postgres@localhost/my_app_test",
+  pool: Ecto.Adapters.SQL.Sandbox
+```
+
+Modify `my_app_umbrella/apps/my_app/config/prod.exs` and
+`my_app_umbrella/apps/my_app_web/config/prod.exs` removing this line from both:
+
+```elixir
+import_config "prod.secret.exs"
+```
+
+Delete the `my_app_umbrella/apps/my_app/config/prod.secret.exs` and
+`my_app_umbrella/apps/my_app_web/config/prod.secret.exs` files.
+
+Build your release and ensure it starts:
+
+```console
+$ MIX_ENV=prod mix release
+$ PORT=4001 \
+    DATABASE_URL="postgres://postgres:postgres@localhost/my_app_dev" \
+    _build/prod/rel/my_app_umbrella/bin/my_app_umbrella foreground
+```
+
+## Containerized Releases
 
 Reference: Distillery's [Working with Docker](working_with_docker)
 
-Create a new `Dockerfile` in your repo's root with the contents of the
-[Alpine Elixir Release](https://github.com/danielspofford/alpine-elixir-release)
-Dockerfile.
+Create a new `my_app_umbrella/Dockerfile` with the contents of the [Alpine
+Elixir Release](aer).
 
 This is based off of the Dockerfile described in Distillery's 2.0 documentation.
 
-Create a `.dockerignore` in your repo's root:
+Where the `PHOENIX_SUBDIR` is declared, set its value to `apps/my_app_web`.
+
+Create a `my_app_umbrella/.dockerignore`:
 
 ```
 _build/
@@ -185,57 +307,78 @@ deps/
 .git/
 .gitignore
 Dockerfile
-Makefile
 README*
 test/
 priv/static/
 ```
 
-Create a `Makefile` in your repo's root:
+Create `my_app_umbrella/scripts/build.sh`:
 
-```
-.PHONY: help
+```sh
+#!/bin/sh
 
-APP_NAME ?= lime_umbrella
-APP_VSN ?= 0.1.0
-BUILD ?= `git rev-parse --short HEAD`
-SKIP_PHOENIX ?= false
-PHOENIX_SUBDIR ?= ./apps/lime_web
+set -e
 
-help:
-	@echo "$(APP_NAME):$(APP_VSN)-$(BUILD)"
-	@perl -nle'print $& if m{^[a-zA-Z_-]+:.*?## .*$$}' $(MAKEFILE_LIST) | \
-		sort | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
+APP_NAME=my_app_umbrella
+APP_VSN=0.1.0
+BUILD="$(git rev-parse --short HEAD)"
+SKIP_PHOENIX=false
+PHOENIX_SUBDIR=./apps/my_app_web
 
-build: ## Build the Docker image
-	docker build --build-arg APP_NAME=$(APP_NAME) \
-		--build-arg APP_VSN=$(APP_VSN) \
-		--build-arg SKIP_PHOENIX=$(SKIP_PHOENIX) \
-		--build-arg PHOENIX_SUBDIR=$(PHOENIX_SUBDIR) \
-		-t $(APP_NAME):$(APP_VSN)-$(BUILD) \
-		-t $(APP_NAME):latest .
+docker build \
+  --build-arg APP_NAME=$APP_NAME \
+  --build-arg APP_VSN=$APP_VSN \
+  --build-arg SKIP_PHOENIX=$SKIP_PHOENIX \
+  --build-arg PHOENIX_SUBDIR=$PHOENIX_SUBDIR \
+  -t $APP_NAME:$APP_VSN-$BUILD \
+  -t $APP_NAME:latest .
 ```
 
-*Note*: If make reports an error mentioning multiple target patterns, you need
-to ensure the Makefile is formatted with tabs not spaces.
+Run the script:
 
-Make sure everything you have done so far is commited then ensure help outputs
-something similar then build the image:
+*Note*: If you haven't committed anything yet, this step will require a commit
+to have been made.
 
-```
-$ make help
-lime_umbrella:0.1.0-de2e903
-build                          Build the Docker image
-$ make build
+```console
+$ ./scripts/build.sh
 ```
 
 Notice that the the last few lines of output:
 
 ```
 Successfully built 6d494c748e0d
-Successfully tagged lime_umbrella:0.1.0-de2e903
-Successfully tagged lime_umbrella:latest
+Successfully tagged my_app_umbrella:0.1.0-de2e903
+Successfully tagged my_app_umbrella:latest
+```
+
+## Create a healthcheck endpoint
+
+Edit
+`my_app_umbrella/apps/my_app_web/lib/my_app_web/controllers/page_controller.ex`
+adding:
+
+```elixir
+def healthcheck_show(conn, _params) do
+  render(conn, "healthcheck_show.json")
+  conn
+  |> send_resp(200, "OK")
+  |> halt()
+end
+```
+
+Edit `my_app_umbrella/apps/my_app_web/lib/my_app_web/router.ex` uncommenting the
+`/api` scope and adding:
+
+```elixir
+get("/healthcheck", PageController, :healthcheck_show)
+```
+
+Edit `my_app_umbrella/apps/my_app_web/lib/my_app_web/views/page_view.ex` adding:
+
+```elixir
+def render("healthcheck_show.json", _) do
+  %{status: :healthy}
+end
 ```
 
 ## Setup AWS infrastructure
@@ -243,19 +386,19 @@ Successfully tagged lime_umbrella:latest
 Install the `draft` mix archive if you haven't already, this facilitates
 command-line execution of arbitrary EEx templates and directories:
 
-```
+```console
 $ mix archive.install github danielspofford/draft
 ```
 
 In the repo's root:
 
-```
-$ mix draft.github danielspofford/draft_aws_ecs --app-name=limeumbrella
+```console
+$ mix draft.github danielspofford/draft_aws_ecs --app-name=myappumbrella
 $ cd infrastructure
 ```
 
 Edit the `stacker.yaml` file adding `PORT: "5000"` to the `ContainerEnvironment`
-section under the `limeumbrella-web-stack` section.
+section under the `my_appumbrella-web-stack` section.
 
 *Disclaimer*: Review the Makefile at your leisure but know that these next few
 steps are going to create infrastructure on AWS that will cost you money. Not
@@ -270,19 +413,20 @@ The next step will require the following env vars to be set:
 - `AWS_ACCESS_KEY_ID={some_key}`
 - `AWS_SECRET_ACCESS_KEY={some_secret}`
 
-Notice that last var starts with your `--app-name` upcased. Run:
+*Note*: Those AWS credentials will be persisted into the ECS container
+environment and used by `libcluster_ecs` to interact with the AWS API.
 
-```
-STACK=dev make build
+```console
+$ STACK=dev make build
 ```
 
 This will start the process of standing up infrastructure. Once you see that the
 ECR has completed, go ahead and CTRL-C to quit the running command, and type
-`exit` to exit the container. If you got an error about LIMEUMBRELLA_IMAGE not
+`exit` to exit the container. If you got an error about my_appUMBRELLA_IMAGE not
 being set don't worry about it yet we will handle that soon. Run the following
 command in the infrastructure folder:
 
-```
+```console
 $ aws ecr get-login --no-include-email
 ```
 
@@ -291,19 +435,19 @@ line of output after executing the command should be affirmative, like:
 `Login Succeeded`. Notice at the end of that command you entered there is the
 URI of your ECR repository, copy that and run:
 
-```
-$ docker tag lime_umbrella:latest {the URI}:latest
+```console
+$ docker tag my_app_umbrella:latest {the URI}:latest
 $ docker push {the URI}:latest
 ```
 
 This will push that image we just built to your ECR repository. Now we want to
 set an additional environment variable:
 
-- `LIMEUMBRELLA_IMAGE={the URI}:latest`
+- `my_appUMBRELLA_IMAGE={the URI}:latest`
 
 Then continue standing up infrastructure:
 
-```
+```console
 $ make shell
 $ STACK=dev make build
 ```
@@ -327,9 +471,10 @@ before the above command will be able to destroy it.
 
 In the repo's root:
 
-```
+```console
 $ mix draft.github danielspofford/draft_aws_ecs_circleci_elixir \
-  --app-name=limeumbrella \
+  --app-name=my_app_umbrella \
+  --app-version=0.1.0 \
   --production-image={the URI} \
   --cluster=your_cluster_name \
   --service=your_service_name \
@@ -341,12 +486,73 @@ $ mix draft.github danielspofford/draft_aws_ecs_circleci_elixir \
 If you want you can set the slack keys to gibberish and then modify the
 generated `.circleci/config.yml` removing any sections specific to them.
 
+Edit `.circleci/config.yml` and find the `docker build` command and before the
+`-t` add `--build-arg SKIP_PHOENIX=false`.
+
 Commit everything and push it up to master then login to CircleCI with your
 GitHub account and follow / start building this repository.
 
+Sign up for a [Sentry] account if you don't have one already. You will need to
+create an auth token with these scopes `project:releases`, `org:write`. Also,
+add your github repository to your sentry account.
+
+In the CircleCI settings for your project add these environment variables:
+
+- `DATABASE_URL=postgres://postgres:postgres@localhost/db`
+- `AWS_ACCESS_KEY_ID=your_key`
+- `AWS_SECRET_ACCESS_KEY=your_secret`
+- `SENTRY_AUTH_TOKEN=your_token`
+- `SENTRY_DSN=your_dsn`
+- `SENTRY_ORG=your_org`
+- `SENTRY_PROJECT=your_project`
+- `AWS_DEFAULT_REGION=us-east-2`
+
 ## Clustering
 
-TODO: write me
+In `apps/my_app/mix.exs`, add:
 
+```elixir
+{:libcluster, "~> 3.0"},
+{:libcluster_ecs, github: "verypossible/libcluster_ecs"}
+```
+
+Then run:
+
+```console
+$ mix deps.get
+```
+
+Within the `start/2` function of `apps/my_app/lib/my_app/application.ex` define
+this:
+
+```elixir
+topologies = [example: [strategy: ClusterECS.Strategy.Metadata]]
+```
+
+Then add this to the list of children to be started:
+
+```elixir
+{Cluster.Supervisor, [topologies, [name: MyApp.ClusterSupervisor]]}
+```
+
+Create a file `rel/config/vm.args.eex` with the follow contents:
+
+```
+-name app@${HOSTNAME}
+
+-setcookie ${COOKIE}
+```
+
+Commit and push all your changes on master to trigger a deploy.
+
+
+[aer]: https://github.com/danielspofford/alpine-elixir-release/blob/v1.0.0/Dockerfile
+[asdf-elixir]: https://github.com/asdf-vm/asdf-elixir
+[asdf-erlang]: https://github.com/asdf-vm/asdf-erlang
+[asdf-nodejs]: https://github.com/asdf-vm/asdf-nodejs
+[asdf]: https://github.com/asdf-vm/asdf
+[distillery]: https://github.com/bitwalker/distillery
+[docker]: https://www.docker.com/
+[libcluster]: https://github.com/bitwalker/libcluster
 [phx_walkthrough]: https://hexdocs.pm/distillery/guides/phoenix_walkthrough.html
 [working_with_docker]: https://hexdocs.pm/distillery/guides/working_with_docker.html
